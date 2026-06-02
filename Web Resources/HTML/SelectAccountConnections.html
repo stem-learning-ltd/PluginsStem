@@ -1,0 +1,190 @@
+﻿<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Select Accounts</title>
+
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+
+    <style>
+        body {
+            font-family: Segoe UI, sans-serif;
+            margin: 20px;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #0078d4;
+            color: #fff;
+            border: 0;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+            button:hover {
+                background: #005a9e;
+            }
+    </style>
+
+    <script>
+        let recordId = null;
+
+        function ensureXrm() {
+            if (typeof Xrm !== "undefined") return Xrm;
+            if (window.parent?.Xrm) return window.parent.Xrm;
+            if (window.top?.Xrm) return window.top.Xrm;
+            return null;
+        }
+
+        async function onLoad() {
+            window.Xrm = ensureXrm();
+
+            recordId = sessionStorage.getItem("sam_recordId");
+            sessionStorage.removeItem("sam_recordId");
+
+            if (!recordId) {
+                alert("❌ No record ID found. Please reopen from the ribbon button.");
+                return;
+            }
+
+            document.getElementById("recordIdHidden").value = recordId;
+
+            $('#accountTable').DataTable({
+                columns: [
+                    { title: "Select", data: "checkbox", orderable: false },
+                    { title: "Account Name", data: "name" },
+                    { title: "Is Administrator", data: "isAdmin", orderable: false } // 🔥 NEW
+                ],
+                data: [],
+                destroy: true
+            });
+
+            document.getElementById("accountType").addEventListener("change", loadAccounts);
+        }
+
+        async function loadAccounts() {
+            const type = document.getElementById("accountType").value;
+            if (!type) return;
+
+            try {
+                const fetchXml = `
+                        <fetch>
+                            <entity name='account'>
+                                <attribute name='accountid'/>
+                                <attribute name='name'/>
+                                <attribute name='sic_organisationtype'/>
+                                <filter>
+                                    <condition attribute='sic_organisationtype' operator='eq' value='${type}'/>
+                                </filter>
+                            </entity>
+                        </fetch>`;
+
+                const clientUrl = Xrm.Utility.getGlobalContext().getClientUrl();
+                const url = `${clientUrl}/api/data/v9.2/accounts?fetchXml=${encodeURIComponent(fetchXml)}`;
+
+                const res = await fetch(url, { headers: { "Accept": "application/json" } });
+                const data = await res.json();
+
+                const table = $('#accountTable').DataTable();
+                table.clear();
+
+                const rows = (data.value || []).map(a => ({
+                    checkbox: `<input type='checkbox' class='accountChk' value='${a.accountid}'/>`,
+                    name: a.name || "",
+                    isAdmin: `<input type='checkbox' class='adminChk' data-id='${a.accountid}'/>` // 🔥 NEW
+                }));
+
+                table.rows.add(rows).draw();
+
+            } catch (err) {
+                console.error("❌ Error loading accounts:", err);
+                alert("Error loading accounts. Check console for details.");
+            }
+        }
+
+        async function submitSelection() {
+            const checked = Array.from(document.querySelectorAll(".accountChk:checked"));
+            if (checked.length === 0) return alert("Please select at least one account.");
+
+            // 🔥 FIX
+            const typeToSend = document.getElementById("accountType").value;
+
+            if (!typeToSend) {
+                alert("❌ Please select an Account Type.");
+                return;
+            }
+
+            // 🔥 NEW
+            const accounts = checked.map(c => {
+                const adminCheckbox = document.querySelector(`.adminChk[data-id='${c.value}']`);
+                return {
+                    id: c.value,
+                    isAdmin: adminCheckbox?.checked || false
+                };
+            });
+
+            const payload = {
+                recordID: document.getElementById("recordIdHidden").value,
+                accountIDs: JSON.stringify(accounts), // 🔄 CHANGED
+                accountType: typeToSend
+            };
+
+            const url = `${Xrm.Utility.getGlobalContext().getClientUrl()}/api/data/v9.2/sam_CreateConnections`;
+
+            try {
+                // 🔥 NEW
+                Xrm.Utility.showProgressIndicator("Your connections are being created...");
+
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "OData-Version": "4.0",
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Accept": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const text = await res.text();
+
+                // 🔥 NEW
+                Xrm.Utility.closeProgressIndicator();
+
+                if (res.ok) {
+                    alert("✅ Connections created successfully!");
+                    Xrm?.Navigation?.closeDialog?.() ?? window.close();
+                } else {
+                    alert("❌ Error: " + text);
+                }
+
+            } catch (err) {
+                Xrm.Utility.closeProgressIndicator();
+                console.error(err);
+                alert("❌ Error creating connections: " + err.message);
+            }
+        }
+
+        window.addEventListener("load", onLoad);
+    </script>
+</head>
+
+<body>
+    <h2>Select Accounts to Connect</h2>
+
+    <input type="hidden" id="recordIdHidden" />
+
+    <label>Account Type:</label>
+    <select id="accountType">
+        <option value="">--Select--</option>
+        <option value="999990001">Scheme</option>
+        <option value="157430004">Institution</option>
+        <option value="157430000">School</option>
+    </select>
+
+    <table id="accountTable" class="display" style="width:100%; margin-top:15px;"></table>
+
+    <br />
+    <button onclick="submitSelection()">Create Connections</button>
+</body>
+</html>
